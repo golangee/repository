@@ -3,22 +3,28 @@ package mem
 import (
 	"encoding/json"
 	"github.com/golangee/repository"
-	"reflect"
+	"github.com/golangee/repository/internal/reflect"
+
 	"sync"
 )
 
+// Repository is a generic CrudRepository using json marshalling to deep clone the entities.
+// Even though this is very demanding for an in-memory store, it guarantees data consistency
+// and no data races when modifying the entities.
 type Repository[T repository.Entity[ID], ID comparable] struct {
-	mutex       sync.RWMutex
-	store       map[ID][]byte
-	pointerType bool
+	mutex     sync.RWMutex
+	store     map[ID][]byte
+	factory   func() T
+	isPtrType bool
 }
 
 func NewRepository[T repository.Entity[ID], ID comparable]() *Repository[T, ID] {
-	var zeroT T
+	fac, ptr := reflect.Constructor[T]()
 
 	return &Repository[T, ID]{
-		store:       map[ID][]byte{},
-		pointerType: reflect.ValueOf(zeroT).Kind() == reflect.Ptr,
+		store:     map[ID][]byte{},
+		factory:   fac,
+		isPtrType: ptr,
 	}
 }
 
@@ -64,40 +70,46 @@ func (r *Repository[T, ID]) FindByID(id ID) (T, error) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	var zeroT T
+	var entity T
 	buf, ok := r.store[id]
 	if !ok {
-		return zeroT, repository.EntityNotFoundError{ID: id}
+		return entity, repository.EntityNotFoundError{ID: id}
 	}
 
-	if r.pointerType {
-		// currently, there seems to be no generic way of creating a pointer instance
-		x := reflect.New(reflect.TypeOf(zeroT).Elem())
-		zeroT = x.Interface().(T)
-		if err := json.Unmarshal(buf, zeroT); err != nil {
-			return zeroT, err
-		}
-	} else {
-		if err := json.Unmarshal(buf, &zeroT); err != nil {
-			return zeroT, err
-		}
-	}
-
-	return zeroT, nil
+	return r.unmarshal(buf)
 }
 
-// FindAll invokes the callback for each entry and keeps the ownership.
+// FindAll invokes the callback for each entry and transfers the ownership.
 // Calling any other instance method from the callback will cause a deadlock.
 func (r *Repository[T, ID]) FindAll(f func(entity T) error) error {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	for _, entity := range r.store {
-		//if err := f(entity); err != nil {
-		//	return err
-		//}
-		_ = entity
+	for _, buf := range r.store {
+		entity, err := r.unmarshal(buf)
+		if err != nil {
+			return err
+		}
+
+		if err := f(entity); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+func (r *Repository[T, ID]) unmarshal(buf []byte) (T, error) {
+	entity := r.factory()
+	if r.isPtrType {
+		if err := json.Unmarshal(buf, entity); err != nil {
+			return entity, err
+		}
+	} else {
+		if err := json.Unmarshal(buf, &entity); err != nil {
+			return entity, err
+		}
+	}
+
+	return entity, nil
 }
