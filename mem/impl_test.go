@@ -2,28 +2,32 @@ package mem
 
 import (
 	"github.com/golangee/repository"
+	"github.com/golangee/repository/internal/test"
 	"testing"
 )
 
 type MyEntity struct {
-	ID string
+	Stuff string
 }
 
-func (e MyEntity) GetID() string {
-	return e.ID
+func TestRepository(t *testing.T) {
+	var a test.CrudTestRepository[test.A, string]
+	a = NewRepository[test.A, string]()
+	test.Test(t, test.CreateTestSet1(), a)
 }
 
 func TestRepository_Count(t *testing.T) {
+
 	var repo repository.CrudRepository[*MyEntity, string]
 	repo = NewRepository[*MyEntity, string]()
 	repo.Count()
-	entity := &MyEntity{ID: "abc"}
-	repo.Save(entity)
+	entity := &MyEntity{Stuff: "abc"}
+	repo.Save("abc", entity)
 	t.Log(repo.Count())
 	repo.DeleteByID("123")
 	t.Log(repo.Count())
 	t.Log(repo.FindByID("abc"))
-	repo.FindAll(func(e *MyEntity) error {
+	repo.FindAll(func(id string, e *MyEntity) error {
 		t.Log("->", e)
 		return nil
 	})
@@ -44,13 +48,13 @@ func TestRepository_Count2(t *testing.T) {
 	var repo repository.CrudRepository[MyEntity, string]
 	repo = NewRepository[MyEntity, string]()
 	repo.Count()
-	entity := MyEntity{ID: "abc"}
-	repo.Save(entity)
+	entity := MyEntity{Stuff: "abc"}
+	repo.Save("abc", entity)
 	t.Log(repo.Count())
 	repo.DeleteByID("123")
 	t.Log(repo.Count())
 	t.Log(repo.FindByID("abc"))
-	repo.FindAll(func(e MyEntity) error {
+	repo.FindAll(func(id string, e MyEntity) error {
 		t.Log("->", e)
 		return nil
 	})

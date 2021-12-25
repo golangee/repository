@@ -4,21 +4,22 @@ import (
 	"encoding/json"
 	"github.com/golangee/repository"
 	"github.com/golangee/repository/internal/reflect"
+	"io"
 
 	"sync"
 )
 
 // Repository is a generic CrudRepository using json marshalling to deep clone the entities.
 // Even though this is very demanding for an in-memory store, it guarantees data consistency
-// and no data races when modifying the entities.
-type Repository[T repository.Entity[ID], ID comparable] struct {
+// and no data races when modifying the entities concurrently (just causing ghost updates).
+type Repository[T any, ID comparable] struct {
 	mutex     sync.RWMutex
 	store     map[ID][]byte
 	factory   func() T
 	isPtrType bool
 }
 
-func NewRepository[T repository.Entity[ID], ID comparable]() *Repository[T, ID] {
+func NewRepository[T any, ID comparable]() *Repository[T, ID] {
 	fac, ptr := reflect.Constructor[T]()
 
 	return &Repository[T, ID]{
@@ -53,7 +54,7 @@ func (r *Repository[T, ID]) DeleteAll() error {
 	return nil
 }
 
-func (r *Repository[T, ID]) Save(entity T) error {
+func (r *Repository[T, ID]) Save(id ID, entity T) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
@@ -62,8 +63,31 @@ func (r *Repository[T, ID]) Save(entity T) error {
 		return err
 	}
 
-	r.store[entity.GetID()] = buf
+	r.store[id] = buf
 	return nil
+}
+
+func (r *Repository[T, ID]) SaveAll(f func() (ID, T, error)) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	for {
+		id, entity, err := f()
+		if err == io.EOF {
+			return nil
+		}
+
+		if err != nil {
+			return err
+		}
+
+		buf, err := json.Marshal(entity)
+		if err != nil {
+			return err
+		}
+
+		r.store[id] = buf
+	}
 }
 
 func (r *Repository[T, ID]) FindByID(id ID) (T, error) {
@@ -81,17 +105,17 @@ func (r *Repository[T, ID]) FindByID(id ID) (T, error) {
 
 // FindAll invokes the callback for each entry and transfers the ownership.
 // Calling any other instance method from the callback will cause a deadlock.
-func (r *Repository[T, ID]) FindAll(f func(entity T) error) error {
+func (r *Repository[T, ID]) FindAll(f func(id ID, entity T) error) error {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	for _, buf := range r.store {
+	for id, buf := range r.store {
 		entity, err := r.unmarshal(buf)
 		if err != nil {
 			return err
 		}
 
-		if err := f(entity); err != nil {
+		if err := f(id, entity); err != nil {
 			return err
 		}
 	}
