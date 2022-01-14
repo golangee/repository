@@ -12,6 +12,7 @@ import (
 // Repository is a generic CrudRepository using json marshalling to deep clone the entities.
 // Even though this is very demanding for an in-memory store, it guarantees data consistency
 // and no data races when modifying the entities concurrently (just causing ghost updates).
+// This implementation is mostly useful for prototyping and testing.
 type Repository[T any, ID comparable] struct {
 	mutex     sync.RWMutex
 	store     map[ID][]byte

@@ -30,10 +30,12 @@ type B struct {
 	ID        string
 	Firstname string
 	Age       int
-	Address   []struct {
-		Street string
-		Zip    string
-	}
+	Address   []C
+}
+
+type C struct {
+	Street string
+	Zip    string
 }
 
 func CreateTestSet1() []TestTableEntry[A, string] {
@@ -43,6 +45,38 @@ func CreateTestSet1() []TestTableEntry[A, string] {
 		{"2", "abc"},
 		{"/\\:", `:'"!`},
 		{"a b c", "hello world"},
+	}
+}
+
+func CreateTestSet2() []TestTableEntry[B, A] {
+	return []TestTableEntry[B, A]{
+		{"1", B{
+			ID:        "id-1",
+			Firstname: "otto",
+			Age:       12,
+			Address: []C{
+				{
+					Street: "Leuchtturm",
+					Zip:    "Emden",
+				},
+			},
+		}},
+	}
+}
+
+func CreateTestSet3() []TestTableEntry[*B, int] {
+	return []TestTableEntry[*B, int]{
+		{1, &B{
+			ID:        "id-1",
+			Firstname: "otto",
+			Age:       12,
+			Address: []C{
+				{
+					Street: "Leuchtturm",
+					Zip:    "Emden",
+				},
+			},
+		}},
 	}
 }
 
