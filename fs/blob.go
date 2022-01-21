@@ -1,28 +1,34 @@
 package fs
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base32"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/golangee/repository/iter"
 	"io"
 	"io/fs"
-	"io/ioutil"
-	"path"
 	"reflect"
-	"strconv"
 	"strings"
+	"sync"
 )
-
-const blobFileExt = ".bin"
 
 var InvalidFilename = errors.New("invalid file name")
 var byteType = reflect.TypeOf(byte(0))
+
+const (
+	MAX_PATH = 4096 - 1 // default linux limit excluding nul terminator
+	NAME_MAX = 255
+)
+
+type Name interface {
+	~string
+}
+
+type openFileMutex struct {
+	mutex sync.RWMutex
+	count int
+}
 
 // BlobRepository provides a simple fs based (not yet standardized) repository.
 // This repository works on POSIX systems and just relies on the filesystem for concurrent and atomic
@@ -36,22 +42,23 @@ var byteType = reflect.TypeOf(byte(0))
 //   hex(sha256(binary(id)))[0])/hex(binary(id))".bin"
 // This implementation is mostly useful for prototyping and testing and shall not replace any serious SQL or NOSQL
 // database. However, even though it may be slow, at least on POSIX it is considered to provide ACID properties.
-type BlobRepository[ID any] struct {
-	fs fs.FS
+type BlobRepository[ID Name] struct {
+	fs   fs.FS
+	pool *rcMutexes[ID]
 }
 
-func NewBlobRepository[ID any](fsys fs.FS) (*BlobRepository[ID], error) {
+func NewBlobRepository[ID Name](fsys fs.FS) (*BlobRepository[ID], error) {
 	for prefix := byte(0); prefix < 0xff; prefix++ {
 		if err := MkdirAll(fsys, hex.EncodeToString([]byte{prefix})); err != nil {
 			return nil, fmt.Errorf("cannot initialize fanout: %w", err)
 		}
 	}
 
-	return &BlobRepository[ID]{fs: fsys}, nil
+	return &BlobRepository[ID]{fs: fsys, pool: newRcMutexes[ID]()}, nil
 }
 
 func (r *BlobRepository[ID]) Count(ctx context.Context) (int64, error) {
-	ids, err := r.Blobs(ctx)
+	ids, err := r.FindAll(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -70,30 +77,66 @@ func (r *BlobRepository[ID]) Count(ctx context.Context) (int64, error) {
 }
 
 func (r *BlobRepository[ID]) Delete(ctx context.Context, id ID) error {
-	//TODO implement me
-	panic("implement me")
+	if !ValidName(id) {
+		return InvalidFilename
+	}
+
+	m := r.pool.get(id)
+	m.inc()
+	defer m.dec()
+
+	m.Lock()
+	defer m.Unlock()
+
+	return Remove(r.fs, string(id))
 }
 
 func (r *BlobRepository[ID]) DeleteAll(ctx context.Context) error {
-	//TODO implement me
-	panic("implement me")
+	ids, err := r.FindAll(ctx)
+	if err != nil {
+		return err
+	}
+
+	return iter.Walk(ids, func(item ID) error {
+		return r.Delete(ctx, item)
+	})
 }
 
 func (r *BlobRepository[ID]) Write(ctx context.Context, id ID) (io.WriteCloser, error) {
-	//TODO implement me
-	panic("implement me")
+	if !ValidName(id) {
+		return nil, InvalidFilename
+	}
+
+	return writeFile(r.fs, string(id), r.pool.get(id))
+
 }
 
 func (r *BlobRepository[ID]) Read(ctx context.Context, id ID) (io.ReadCloser, error) {
-	//TODO implement me
-	panic("implement me")
+	if !ValidName(id) {
+		return nil, InvalidFilename
+	}
+
+	return readFile(r.fs, string(id), r.pool.get(id))
 }
 
-// Blobs returns all blob identifiers. The current implementation buffers first the entire list of ids before
-// the iterator becomes available.
-func (r *BlobRepository[ID]) Blobs(ctx context.Context) (iter.Iterator[ID], error) {
+// FindAll returns all blob identifiers. The current implementation buffers first the entire list of ids before
+// the iterator becomes available. Files with a leading . are ignored.
+func (r *BlobRepository[ID]) FindAll(ctx context.Context) (iter.Iterator[ID], error) {
+	return r.FindByPrefix(ctx, ".")
+}
+
+// FindByPrefix is a special functions for this filesystem based implementation and allows to return
+// a folder based prefix. To list the root, use '.' otherwise any ValidName denoting a directory is allowed.
+// All contained files are returned recursively. Files with a leading . are ignored.
+func (r *BlobRepository[ID]) FindByPrefix(ctx context.Context, prefix string) (iter.Iterator[ID], error) {
+	if prefix != "." {
+		if !ValidName(prefix) {
+			return nil, InvalidFilename
+		}
+	}
+
 	var res []ID
-	err := fs.WalkDir(r.fs, ".", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(r.fs, prefix, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -102,13 +145,8 @@ func (r *BlobRepository[ID]) Blobs(ctx context.Context) (iter.Iterator[ID], erro
 			return fs.SkipDir
 		}
 
-		if !d.IsDir() && strings.HasSuffix(d.Name(), blobFileExt) {
-			id, err := decode[ID](d.Name())
-			if err != nil {
-				return InvalidFilename
-			}
-
-			res = append(res, id)
+		if !d.IsDir() && !strings.HasSuffix(d.Name(), ".") {
+			res = append(res, ID(path))
 		}
 
 		return nil
@@ -121,89 +159,45 @@ func (r *BlobRepository[ID]) Blobs(ctx context.Context) (iter.Iterator[ID], erro
 	return iter.Iter(res), nil
 }
 
-// decode is the reverse of encode.
-func decode[ID any](filename string) (ID, error) {
-	fname := path.Base(filename)
-	ext := path.Ext(fname)
-	if ext != "" {
-		fname = fname[:len(fname)-len(ext)]
+// ValidName returns false, if name does not apply to our rules of a safe name:
+//  * 255 bytes per segment (NAME_MAX)
+//  * no multibyte, no unicode, only a-z | 0-9 | . | _ | - to avoid normalization case sensitivity issues
+//  * at most 4096 (MAX_PATH - 1) // including nul
+//  * prefix / directory separator is /
+// Our safe name rules represent more a or less the lowest subset of file names, which most common operating systems
+// and storage apis support. This rules should be safe for windows, macos, linux and S3. For sure, Windows has
+// some funny reserved names like LPT and COM etc. which are not checked.
+func ValidName[T Name](name T) bool {
+	if len(name) == 0 || len(name) > MAX_PATH {
+		return false
 	}
 
-	var id ID // only values types supported
-	dec := base32.NewDecoder(base32.HexEncoding.WithPadding(base32.NoPadding), bytes.NewReader([]byte(fname)))
-	buf, err := ioutil.ReadAll(dec)
-	if err != nil {
-		return id, fmt.Errorf("invalid base32 encoding in filename: %s (%s): %w", fname, filename, err)
-	}
+	for {
+		i := 0
+		for i < len(name) && name[i] != '/' {
+			i++
+		}
 
-	err = json.Unmarshal(buf, &id)
-	if err != nil {
-		return id, fmt.Errorf("cannot unmarshal json encoded filename: %s: %w", fname, err)
-	}
+		elem := name[:i]
+		if elem == "" || elem == "." || elem == ".." {
+			return false
+		}
 
-	return id, nil
-}
+		if len(elem) > NAME_MAX {
+			return false
+		}
 
-// encode returns the filename for the id:
-//  hex(sha256(binary(id)))[0])/hex(binary(id))".bin"
-func encode[ID any](id ID) (string, error) {
-	// currently, we are screwed, see https://github.com/golang/go/issues/45380
-	var buf []byte
-	t := reflect.TypeOf(id)
-	v := reflect.ValueOf(id)
-	safeString := false
-	switch t.Kind() {
-	case reflect.Array:
-		if t.Elem() == byteType {
-			fmt.Println("=> got a byte array", t.Elem(), t)
-			buf = make([]byte, 0, v.Len())
-			for i := 0; i < v.Len(); i++ {
-				buf = append(buf, byte(v.Index(i).Uint()))
+		for c := 0; c < len(elem); c++ {
+			v := elem[c]
+			if !((v >= 'a' && v <= 'z') || (v >= '0' && v <= '9') || v == '.' || v == '_' || v == '-') {
+				return false
 			}
 		}
-	case reflect.Slice:
-		if t.Elem() == byteType {
-			fmt.Println("=> got a byte slice", t.Elem(), t)
-			buf = v.Bytes()
+
+		if i == len(name) {
+			return true
 		}
 
-	case reflect.String:
-		// actually we could just allow that, but that seems to cause a lot of headache:
-		// - we must check for directory traversal or injection attacks
-		// - file systems causing collisions due to case insensitivity
-		// - file systems causing missing identifiers due to hidden unicode normalization (windows, macos)
-		// - file systems not supporting all byte sequences (windows, macos)
-		buf = []byte(any(id).(string))
-	case reflect.Int16:
-		fallthrough
-	case reflect.Int32:
-		fallthrough
-	case reflect.Int64:
-		buf = strconv.AppendInt(buf, v.Int(), 16)
-		safeString = true
-
-	case reflect.Uint16:
-		fallthrough
-	case reflect.Uint32:
-		fallthrough
-	case reflect.Uint64:
-		buf = strconv.AppendUint(buf, v.Uint(), 16)
-		safeString = true
+		name = name[i+1:]
 	}
-
-	if buf == nil {
-		panic("unsupported id type for encoding: " + t.String())
-	}
-
-	fmt.Println(id, "=>", buf)
-
-	sum := sha256.Sum256(buf)
-	fanout := hex.EncodeToString(sum[:1])
-	var fname string
-	if safeString {
-		fname = string(buf)
-	} else {
-		fname = hex.EncodeToString(buf)
-	}
-	return path.Join(fanout, fname+blobFileExt), nil
 }

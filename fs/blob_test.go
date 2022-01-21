@@ -4,6 +4,7 @@ import (
 	"testing"
 )
 
+/*
 type uuid [16]byte
 
 type key []byte
@@ -14,7 +15,8 @@ func Test_codec(t *testing.T) {
 	t.Log("->", must(encode(int32(-127))))
 	t.Log("->", must(encode(uuid{})))
 	t.Log("->", must(encode("550e8400-e29b-11d4-a716-446655440000")))
-	t.Log("->", must(encode("%&$§\"öäü@!:;/\\")))
+	t.Log("->", must(encode("ticket/550e8400-e29b-11d4-a716-446655440000/attachments/screenshot.jpg")))
+	t.Log("->", must(encode([]byte("%&$§\"öäü@!:;/\\"))))
 	/*
 		tests := []struct {
 			id any
@@ -46,7 +48,7 @@ func Test_codec(t *testing.T) {
 				}
 			})
 		}*/
-}
+//}*/
 
 func must[T any](t T, err error) T {
 	if err != nil {
@@ -54,4 +56,38 @@ func must[T any](t T, err error) T {
 	}
 
 	return t
+}
+
+func Test_validName(t *testing.T) {
+
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"", false},
+		{"/", false},
+		{".", false},
+		{"a/b/c", true},
+		{"a/b /c", false},
+		{"a/b b/c", false},
+		{"A/b/c", false},
+		{"%20/b/c", false},
+		{"/a", false},
+		{"a", true},
+		{"a/b/./c", false},
+		{"a/b//c", false},
+		{"a/b/../c", false},
+		{"a/b/c/", false},
+		{"myname.txt", true},
+		{"my-context/my_ticket/file.txt", true},
+		{"1/2/3", true},
+		{"550e8400-e29b-11d4-a716-446655440000", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ValidName(tt.name); got != tt.want {
+				t.Errorf("validName() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }

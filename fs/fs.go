@@ -6,16 +6,24 @@ import (
 	"io/fs"
 )
 
-var WriteNotSupported = errors.New("fs does not support file writes")
 var MkDirNotSupported = errors.New("fs does not support mkdir")
+var RemoveNotSupported = errors.New("fs does not support remove")
+var FileOpenNotSupported = errors.New("fs does not support OpenFile")
+var WriteableFileNotSupported = errors.New("fs file does not write")
+var RenameFileNotSupported = errors.New("fs does not support rename")
 
-// WriteFileFS is the interface implemented by a file system
-// that provides an optimized implementation of WriteFile.
-type WriteFileFS interface {
+type RenameFileFS interface {
 	fs.FS
 
-	// WriteFile writes the named file.
-	WriteFile(name string, data []byte) error
+	// Rename tries to perform an atomic rename if possible.
+	Rename(oldpath, newpath string) error
+}
+
+type RemoveFileFS interface {
+	fs.FS
+
+	// Remove unlinks or deletes the given file or directory.
+	Remove(name string) error
 }
 
 // WriteFS is the interface implemented by a file system
@@ -34,6 +42,13 @@ type MakeDirFileFS interface {
 
 	// MkdirAll creates all folders, if required. If name denotes already directories, returns nil.
 	MkdirAll(name string) error
+}
+
+type OpenFileFS interface {
+	fs.FS
+
+	// OpenFile is the Posix-style fopen thing.
+	OpenFile(name string, flag int, perm fs.FileMode) (fs.File, error)
 }
 
 type WriteableFile interface {
@@ -55,42 +70,28 @@ func MkdirAll(fsys fs.FS, name string) error {
 	return MkDirNotSupported
 }
 
-// WriteFile writes the named file into the file system fs replacing and truncating its content.
-// A successful call returns a nil error.
-//
-// If fs implementsWriteFileFS, WriteFile calls fs.WriteFile.
-// Otherwise, WriteFile calls fs.Open and uses Write, Sync (optionally) and Close
-// on the returned file.
-func WriteFile(fsys fs.FS, name string, data []byte) (err error) {
-	if fsys, ok := fsys.(WriteFileFS); ok {
-		return fsys.WriteFile(name, data)
+// Remove tries to remove the named file.
+func Remove(fsys fs.FS, name string) error {
+	if fsys, ok := fsys.(RemoveFileFS); ok {
+		return fsys.Remove(name)
 	}
 
-	file, err := fsys.Open(name)
-	if err != nil {
-		return err
+	return RemoveNotSupported
+}
+
+// OpenFile tries open a file using posix style.
+func OpenFile(fsys fs.FS, name string, flag int, perm fs.FileMode) (fs.File, error) {
+	if fsys, ok := fsys.(OpenFileFS); ok {
+		return fsys.OpenFile(name, flag, perm)
 	}
 
-	defer func() {
-		if e := file.Close(); e != nil && err == nil {
-			err = e
-		}
-	}()
+	return nil, FileOpenNotSupported
+}
 
-	wfile, ok := file.(WriteableFile)
-	if !ok {
-		return WriteNotSupported
+func Rename(fsys fs.FS, oldpath, newpath string) error {
+	if fsys, ok := fsys.(RenameFileFS); ok {
+		return fsys.Rename(oldpath, newpath)
 	}
 
-	if _, err := wfile.Write(data); err != nil {
-		return err
-	}
-
-	if file, ok := file.(SyncableFile); ok {
-		if err := file.Sync(); err != nil {
-			return err
-		}
-	}
-
-	return // see defer close
+	return RenameFileNotSupported
 }

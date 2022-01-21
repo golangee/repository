@@ -14,5 +14,5 @@ type BlobRepository[ID comparable] interface {
 	DeleteAll(ctx context.Context) error                      // DeleteAll clears the repository.
 	Write(ctx context.Context, id ID) (io.WriteCloser, error) // Write allocates a new blob for the id and commits the written data on close. To stop, cancel the context.
 	Read(ctx context.Context, id ID) (io.ReadCloser, error)   // Read opens the blob or returns a NotFoundError. Close to early release resources.
-	Blobs(ctx context.Context) (iter.Iterator[ID], error)     // Blobs finds all blob ids.
+	FindAll(ctx context.Context) (iter.Iterator[ID], error)   // FindAll finds all blob ids.
 }
