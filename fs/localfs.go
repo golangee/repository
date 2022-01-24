@@ -4,6 +4,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -19,12 +20,23 @@ func Dir(path string) fs.FS {
 }
 
 func (l dirFS) Open(name string) (fs.File, error) {
-	if name == "." {
-		name = ""
-	}
-
 	// windows also accepts the slashes from fs.FS
-	return os.Open(filepath.Join(l.root, name))
+	return os.Open(filepath.Join(l.root, path.Clean(name)))
+}
+
+func (l dirFS) Remove(name string) error {
+	// windows also accepts the slashes from fs.FS
+	return os.Remove(filepath.Join(l.root, path.Clean(name)))
+}
+
+func (l dirFS) Rename(oldpath, newpath string) error {
+	// windows also accepts the slashes from fs.FS
+	return os.Rename(filepath.Join(l.root, path.Clean(oldpath)), filepath.Join(l.root, path.Clean(newpath)))
+}
+
+func (l dirFS) OpenFile(name string, flag int, perm fs.FileMode) (fs.File, error) {
+	// windows also accepts the slashes from fs.FS
+	return os.OpenFile(filepath.Join(l.root, path.Clean(name)), flag, perm)
 }
 
 func (l dirFS) MkdirAll(name string) error {

@@ -57,6 +57,12 @@ func NewBlobRepository[ID Name](fsys fs.FS) (*BlobRepository[ID], error) {
 	return &BlobRepository[ID]{fs: fsys, pool: newRcMutexes[ID]()}, nil
 }
 
+func (r *BlobRepository[ID]) assertEmptyMutexes() {
+	if len(r.pool.pool) != 0 {
+		panic(fmt.Sprintf("expected empty pool but got %v entries", len(r.pool.pool)))
+	}
+}
+
 func (r *BlobRepository[ID]) Count(ctx context.Context) (int64, error) {
 	ids, err := r.FindAll(ctx)
 	if err != nil {

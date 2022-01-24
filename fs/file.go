@@ -136,7 +136,7 @@ func writeFile(fsys fs.FS, name string, mutex *rcMutex) (*fileWriteCloser, error
 }
 
 func (f *fileWriteCloser) Write(p []byte) (n int, err error) {
-	return f.Write(p)
+	return f.tmpFile.Write(p)
 }
 
 func (f *fileWriteCloser) Close() error {
